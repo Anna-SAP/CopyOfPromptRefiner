@@ -1,16 +1,75 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowRight, Loader2, Wand2 } from 'lucide-react';
+
+import React, { useState, useEffect } from 'react';
+import { Loader2, Wand2 } from 'lucide-react';
 import Header from './components/Header';
 import ImageUploader from './components/ImageUploader';
 import RefineOutput from './components/RefineOutput';
+import HistorySidebar from './components/HistorySidebar';
 import { geminiService } from './services/geminiService';
-import { AttachedImage, AppStatus } from './types';
+import { AttachedImage, AppStatus, HistoryItem } from './types';
+
+const MAX_HISTORY_ITEMS = 50;
+const STORAGE_KEY = 'prompt_refiner_history';
 
 const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [images, setImages] = useState<AttachedImage[]>([]);
   const [outputContent, setOutputContent] = useState('');
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
+  
+  // History State
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  // Load history from localStorage on mount
+  useEffect(() => {
+    try {
+      const storedHistory = localStorage.getItem(STORAGE_KEY);
+      if (storedHistory) {
+        setHistory(JSON.parse(storedHistory));
+      }
+    } catch (e) {
+      console.error("Failed to load history", e);
+    }
+  }, []);
+
+  // Save history to local storage whenever it changes
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  }, [history]);
+
+  const addToHistory = (original: string, refined: string) => {
+    const newItem: HistoryItem = {
+      id: crypto.randomUUID(),
+      originalPrompt: original,
+      refinedPrompt: refined,
+      timestamp: Date.now()
+    };
+
+    setHistory(prev => {
+      const updated = [newItem, ...prev];
+      return updated.slice(0, MAX_HISTORY_ITEMS);
+    });
+  };
+
+  const deleteHistoryItem = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent triggering selection
+    setHistory(prev => prev.filter(item => item.id !== id));
+  };
+
+  const clearHistory = () => {
+    setHistory([]);
+  };
+
+  const selectHistoryItem = (item: HistoryItem) => {
+    if (status === AppStatus.GENERATING) return;
+    
+    setInputText(item.originalPrompt);
+    setOutputContent(item.refinedPrompt);
+    setImages([]); // History doesn't store heavy images for performance
+    setStatus(AppStatus.COMPLETE);
+    setIsHistoryOpen(false);
+  };
 
   // Handle Global Paste for Images
   useEffect(() => {
@@ -48,16 +107,28 @@ const App: React.FC = () => {
 
     setStatus(AppStatus.GENERATING);
     setOutputContent('');
+    
+    // We need to accumulate the text here to save it to history later
+    // because outputContent state won't update synchronously inside the function
+    let fullGeneratedText = '';
 
     try {
       await geminiService.refinePromptStream(
         inputText,
         images,
         (chunk) => {
+          fullGeneratedText += chunk;
           setOutputContent(prev => prev + chunk);
         }
       );
       setStatus(AppStatus.COMPLETE);
+      
+      // Save to history after successful generation
+      // We check if text is not empty to avoid saving failed empty states
+      if (fullGeneratedText.trim()) {
+        addToHistory(inputText, fullGeneratedText);
+      }
+
     } catch (error) {
       console.error(error);
       setStatus(AppStatus.ERROR);
@@ -89,8 +160,21 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-dark-bg text-slate-200 font-sans selection:bg-brand-500/30 selection:text-brand-100">
-      <Header onReset={handleStartOver} />
+    <div className="min-h-screen bg-dark-bg text-slate-200 font-sans selection:bg-brand-500/30 selection:text-brand-100 relative">
+      <Header 
+        onReset={handleStartOver} 
+        onToggleHistory={() => setIsHistoryOpen(true)}
+        historyCount={history.length}
+      />
+
+      <HistorySidebar 
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        history={history}
+        onSelect={selectHistoryItem}
+        onDelete={deleteHistoryItem}
+        onClearAll={clearHistory}
+      />
 
       <main className="max-w-7xl mx-auto p-4 md:p-6 lg:p-8 h-[calc(100vh-80px)]">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full">
